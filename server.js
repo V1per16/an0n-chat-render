@@ -8,7 +8,7 @@ const { Pool } = require('pg');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
-// --- PostgreSQL Pool (Render + Neon compatible) ---
+// --- PostgreSQL Pool ---
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
@@ -104,27 +104,43 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Update Profile
+// ---- Update Profile (FIXED) ----
 app.post('/api/update-profile', async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
   const session = activeSessions[token];
-  if (!session || session.expires < Date.now()) return res.status(401).json({ error: 'Invalid session' });
+  if (!session || session.expires < Date.now()) {
+    return res.status(401).json({ error: 'Invalid session' });
+  }
 
   const { name, color, password } = req.body;
-  if (!name || !color) return res.status(400).json({ error: 'Required' });
+  if (!name || !color) {
+    return res.status(400).json({ error: 'Name and color required' });
+  }
 
-  const updates = { name, color };
-  if (password) updates.password = hashPassword(password);
+  // Dynamic query for optional password
+  let query = 'UPDATE users SET name = $1, color = $2 WHERE id = $3';
+  let params = [name, color, session.user.id];
+
+  if (password) {
+    query = 'UPDATE users SET name = $1, color = $2, password = $3 WHERE id = $4';
+    params = [name, color, hashPassword(password), session.user.id];
+  }
 
   try {
-    await pool.query('UPDATE users SET name = $1, color = $2, password = $3 WHERE id = $4',
-      [name, color, password ? updates.password : null, session.user.id].filter(Boolean));
+    const result = await pool.query(query, params);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     session.user.name = name;
     session.user.color = color;
     res.json({ success: true });
   } catch (err) {
-    if (err.code === '23505') return res.status(400).json({ error: 'Username taken' });
-    res.status(500).json({ error: 'DB error' });
+    console.error('UPDATE PROFILE error:', err);
+    if (err.code === '23505') {
+      return res.status(400).json({ error: 'Username already taken' });
+    }
+    res.status(500).json({ error: 'Database error' });
   }
 });
 
@@ -140,13 +156,9 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   onlineUsers.set(socket.id, socket.user);
-  // === JOIN / LEAVE MESSAGES ===
-  socket.broadcast.emit('user joined', socket.user);
-  
-  socket.on('disconnect', () => {
-    socket.broadcast.emit('user left', socket.user);
-  });
   io.emit('online', Array.from(onlineUsers.values()));
+
+  // Join message
   socket.broadcast.emit('user joined', socket.user);
 
   // Load history
@@ -201,6 +213,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Leave message
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.id);
     io.emit('online', Array.from(onlineUsers.values()));
@@ -208,8 +221,8 @@ io.on('connection', (socket) => {
   });
 });
 
-// --- Keep DB warm ---
+// Keep DB warm
 setInterval(() => pool.query('SELECT 1').catch(() => {}), 10 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server on port ${PORT}`));
