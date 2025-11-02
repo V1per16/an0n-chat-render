@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card-bg: #ffffff;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --input-bg: #f8fafc;
+      --send-btn: #4f46e5;
+      --send-hover: #4338ca;
+      --bubble-own: #4f46e5;
+      --bubble-other: #e2e8f0;
+      --shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+    }
+
+    [data-theme="dark"] {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --input-bg: #334155;
+      --send-btn: #818cf8;
+      --send-hover: #6366f1;
+      --bubble-own: #6366f1;
+      --bubble-other: #334155;
+      --shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      transition: background 0.3s ease;
+    }
+
+    .chat-container {
+      width: 100%; max-width: 900px; height: 90vh;
+      background: var(--card-bg);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: all 0.3s ease;
+    }
+
+    .chat-header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      font-weight: 600;
+      font-size: 1.25rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header-left { font-weight: 600; }
+    .header-right { display: flex; gap: 0.75rem; align-items: center; }
+
+    .btn, .theme-toggle {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 0.45rem 1rem;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.25s ease;
+    }
+    .btn:hover, .theme-toggle:hover {
+      background: rgba(99, 102, 241, 0.1);
+      border-color: #6366f1;
+    }
+
+    .theme-toggle {
+      width: 40px; height: 40px; padding: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.1rem;
+    }
+
+    .messages {
+      flex: 1;
+      padding: 1.5rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .message {
+      max-width: 72%;
+      padding: 0.9rem 1.3rem;
+      border-radius: 20px;
+      line-height: 1.5;
+      word-wrap: break-word;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.06);
+      animation: slideIn 0.35s ease-out;
+    }
+
+    .message.own {
+      align-self: flex-end;
+      background: var(--bubble-own);
+      color: white;
+      border-bottom-right-radius: 6px;
+    }
+
+    .message.other {
+      align-self: flex-start;
+      background: var(--bubble-other);
+      color: var(--text);
+      border-bottom-left-radius: 6px;
+    }
+
+    .message .sender {
+      font-weight: 600;
+      font-size: 0.88rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .message .time {
+      font-size: 0.75rem;
+      opacity: 0.75;
+      margin-top: 0.35rem;
+      text-align: right;
+    }
+
+    .system {
+      align-self: center;
+      background: rgba(148, 163, 184, 0.15);
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.9rem;
+      padding: 0.6rem 1.1rem;
+      border-radius: 16px;
+    }
+
+    /* TYPING INDICATOR — PUT HERE */
+    #typingIndicator {
+      text-align: center;
+      padding: 0.5rem;
+      color: var(--text-muted);
+      font-style: italic;
+      font-size: 0.9rem;
+      min-height: 1.5rem;
+      display: none;
+    }
+
+    .input-area {
+      display: flex;
+      padding: 1rem 1.2rem;
+      background: var(--card-bg);
+      border-top: 1px solid var(--border);
+      gap: 1rem;
+      flex-direction: column;
+    }
+
+    #input {
+      flex: 1;
+      padding: 0.85rem 1.3rem;
+      border: 1px solid var(--border);
+      border-radius: 30px;
+      background: var(--input-bg);
+      color: var(--text);
+      font-size: 1rem;
+      outline: none;
+      transition: all 0.25s;
+    }
+    #input:focus {
+      border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    }
+
+    button.send {
+      background: var(--send-btn);
+      color: white;
+      border: none;
+      min-width: 90px;
+      padding: 0 1.2rem;
+      height: 50px;
+      border-radius: 25px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      box-shadow: 0 3px 12px rgba(99, 102, 241, 0.25);
+      transition: all 0.25s ease;
+    }
+    button.send:hover {
+      background: var(--send-hover);
+      transform: translateY(-1px);
+    }
+
+    .messages::-webkit-scrollbar { width: 6px; }
+    .messages::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.3);
+      border-radius: 3px;
+    }
+
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 600px) {
+      .chat-container { height: 100vh; border-radius: 0; }
+      .message { max-width: 82%; }
+      button.send { min-width: 80px; font-size: 0.95rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <div class="chat-header">
+      <div class="header-left">Chat</div>
+      <div class="header-right">
+        <span id="onlineCount" style="font-size:0.9rem;color:var(--text-muted);">0 online</span>
+        <button class="btn" onclick="location.href='/settings.html'">Settings</button>
+        <button class="theme-toggle" id="themeToggle">Sun</button>
+        <button class="btn" onclick="logout()">Logout</button>
+      </div>
+    </div>
+    <div id="messages" class="messages"></div>
+
+    <!-- TYPING INDICATOR GOES HERE -->
+    <div id="typingIndicator"></div>
+
+    <form class="input-area" id="form">
+      <input id="input" autocomplete="off" placeholder="Type a message..." />
+      <button type="submit" class="send">Send</button>
+    </form>
+  </div>
+
+  <!-- Context Menu -->
+  <div id="contextMenu" style="position:absolute;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:0.5rem 0;box-shadow:var(--shadow);display:none;z-index:100;">
+    <div onclick="editMessage()" style="padding:0.5rem 1rem;cursor:pointer;">Edit</div>
+    <div onclick="deleteMessage()" style="padding:0.5rem 1rem;cursor:pointer;color:#ef4444;">Delete</div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="chat.js"></script>
+  <script>
+    // === Dark Mode Toggle ===
+    const toggle = document.getElementById('themeToggle');
+    const html = document.documentElement;
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      html.setAttribute('data-theme', 'dark');
+      toggle.textContent = 'Moon';
+    }
+    toggle.addEventListener('click', () => {
+      if (html.getAttribute('data-theme') === 'dark') {
+        html.removeAttribute('data-theme');
+        toggle.textContent = 'Sun';
+        localStorage.setItem('theme', 'light');
+      } else {
+        html.setAttribute('data-theme', 'dark');
+        toggle.textContent = 'Moon';
+        localStorage.setItem('theme', 'dark');
+      }
+    });
+
+    function logout() {
+      if (confirm('Logout?')) {
+        localStorage.clear();
+        location.href = '/login.html';
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Settings</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --text: #0f172a;
+      --border: #e2e8f0;
+      --primary: #4f46e5;
+      --shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+    }
+    [data-theme="dark"] {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --text: #f1f5f9;
+      --border: #334155;
+      --primary: #818cf8;
+      --shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      transition: background 0.3s ease;
+    }
+    .card {
+      width: 100%; max-width: 420px;
+      background: var(--card);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      padding: 2rem;
+    }
+    h1 {
+      font-size: 1.5rem; margin-bottom: 1.6rem; text-align: center;
+      color: var(--primary); font-weight: 600;
+    }
+    .field { margin-bottom: 1.3rem; }
+    label {
+      display: block; margin-bottom: 0.5rem; font-weight: 500; font-size: 0.95rem;
+    }
+    input, button {
+      width: 100%; padding: 0.85rem 1.1rem; border: 1px solid var(--border);
+      border-radius: 12px; font-size: 1rem; transition: 0.25s;
+    }
+    input {
+      background: var(--input-bg, #f8fafc);
+      color: var(--text);
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    }
+    button {
+      background: var(--primary); color: white; margin-top: 1.2rem;
+      cursor: pointer; font-weight: 600;
+      box-shadow: 0 3px 12px rgba(99, 102, 241, 0.2);
+    }
+    button:hover { background: #4338ca; transform: translateY(-1px); }
+    .back { background: #e2e8f0; color: #475569; margin-top: 0.6rem; }
+    .back:hover { background: #cbd5e1; }
+    .status { margin-top: 1.2rem; text-align: center; font-weight: 500; }
+    .color-preview {
+      width: 48px; height: 48px; border-radius: 50%; margin-top: 0.6rem;
+      border: 3px solid var(--card); box-shadow: 0 0 0 1px var(--border);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Settings</h1>
+
+    <div class="field">
+      <label>Your ID (permanent)</label>
+      <input id="uniqueId" type="text" readonly style="background:#f1f5f9;color:#64748b;" />
+    </div>
+
+    <div class="field">
+      <label>Username</label>
+      <input id="name" type="text" />
+    </div>
+
+    <div class="field">
+      <label>Color</label>
+      <input id="color" type="color" />
+      <div id="colorPreview" class="color-preview"></div>
+    </div>
+
+    <div class="field">
+      <label>New Password (optional)</label>
+      <input id="password" type="password" placeholder="Leave blank to keep" />
+    </div>
+
+    <button onclick="save()">Save Changes</button>
+    <button class="back" onclick="location.href='/index.html'">Back to Chat</button>
+    <button class="back" onclick="logout()" style="margin-top: 0.5rem;">Logout</button>
+
+    <p class="status" id="status"></p>
+  </div>
+
+  <script>
+    // Sync theme with main page
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+
+    const user = JSON.parse(localStorage.getItem('chatUser'));
+    if (!user) location.href = '/login.html';
+
+    document.getElementById('uniqueId').value = user.uniqueId;
+    document.getElementById('name').value = user.name;
+    document.getElementById('color').value = user.color;
+    document.getElementById('colorPreview').style.background = user.color;
+
+    document.getElementById('color').oninput = (e) => {
+      document.getElementById('colorPreview').style.background = e.target.value;
+    };
+
+    async function save() {
+      const status = document.getElementById('status');
+      const name = document.getElementById('name').value.trim();
+      const color = document.getElementById('color').value;
+      const password = document.getElementById('password').value;
+      const token = localStorage.getItem('chatToken');
+
+      if (!name) return status.textContent = 'Username required';
+      if (!token) return location.href = '/login.html';
+
+      const body = { name, color };
+      if (password) body.password = password;
+
+      try {
+        const res = await fetch('/api/update-profile', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          const updated = { ...user, name, color };
+          localStorage.setItem('chatUser', JSON.stringify(updated));
+          status.style.color = '#10b981';
+          status.textContent = 'Saved! Refresh chat.';
+        } else {
+          status.style.color = '#ef4444';
+          status.textContent = data.error;
+        }
+      } catch {
+        status.style.color = '#ef4444';
+        status.textContent = 'Network error';
+      }
+    }
+
+    function logout() {
+      if (confirm('Logout?')) {
+        localStorage.clear();
+        location.href = '/login.html';
+      }
+    }
+  </script>
+</body>
+</html>
