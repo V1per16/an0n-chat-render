@@ -3,49 +3,23 @@ const app = express();
 const http = require('http');
 const server = http.createServer(app);
 const { Server } = require('socket.io');
-const io = new Server(server);
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const io = new Server(server, { cors: { origin: "*" } });
+const { Pool } = require('pg');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
-// ---------- Middleware ----------
+// --- PostgreSQL Pool (Render + Neon compatible) ---
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+});
+
+// --- Middleware ---
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(express.static('public'));
 
-// ---------- Database ----------
-const DB_PATH = path.join(__dirname, 'chat.db');
-const db = new sqlite3.Database(DB_PATH);
-
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      color TEXT NOT NULL,
-      unique_id TEXT UNIQUE
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER NOT NULL,
-      text TEXT NOT NULL,
-      timestamp INTEGER NOT NULL,
-      FOREIGN KEY(user_id) REFERENCES users(id)
-    )
-  `);
-
-  // Add unique_id column if missing (safe to run multiple times)
-  db.run(`ALTER TABLE users ADD COLUMN unique_id TEXT UNIQUE`, (err) => {
-    if (err && !err.message.includes('duplicate column name')) console.error(err);
-  });
-});
-
-// ---------- Helpers ----------
+// --- Helpers ---
 function hashPassword(pw) { return bcrypt.hashSync(pw, 10); }
 function verifyPassword(pw, hash) { return bcrypt.compareSync(pw, hash); }
 
@@ -58,214 +32,167 @@ function generateUniqueId() {
   return id;
 }
 
-// In-memory session store
 const activeSessions = {};
+const onlineUsers = new Map();
 
-// ---------- Routes ----------
+// --- Init DB ---
+pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR UNIQUE NOT NULL,
+    password VARCHAR NOT NULL,
+    color VARCHAR NOT NULL,
+    unique_id VARCHAR UNIQUE
+  );
+  CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    timestamp BIGINT NOT NULL
+  );
+`).catch(console.error);
+
+// --- Routes ---
 app.get('/', (req, res) => res.sendFile(__dirname + '/public/login.html'));
 
-// ---- Register ----
-app.post('/api/register', (req, res) => {
+// Register
+app.post('/api/register', async (req, res) => {
   const { name, password, color } = req.body;
-  if (!name || !password || !color) {
-    return res.status(400).json({ error: 'All fields required' });
-  }
+  if (!name || !password || !color) return res.status(400).json({ error: 'All fields required' });
 
   const hashed = hashPassword(password);
   const uniqueId = generateUniqueId();
 
-  db.run(
-    'INSERT INTO users (name, password, color, unique_id) VALUES (?, ?, ?, ?)',
-    [name, hashed, color, uniqueId],
-    function (err) {
-      if (err) {
-        if (err.message.includes('UNIQUE')) {
-          return res.status(400).json({ error: 'Username or ID taken' });
-        }
-        return res.status(500).json({ error: 'Database error' });
-      }
-      res.json({ success: true, userId: this.lastID, uniqueId });
-    }
-  );
+  try {
+    const result = await pool.query(
+      'INSERT INTO users (name, password, color, unique_id) VALUES ($1, $2, $3, $4) RETURNING id, unique_id',
+      [name, hashed, color, uniqueId]
+    );
+    res.json({ success: true, userId: result.rows[0].id, uniqueId: result.rows[0].unique_id });
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Username taken' });
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
-// ---- Login ----
-app.post('/api/login', (req, res) => {
+// Login
+app.post('/api/login', async (req, res) => {
   const { name, password } = req.body;
-  if (!name || !password) {
-    return res.status(400).json({ error: 'Username & password required' });
-  }
+  if (!name || !password) return res.status(400).json({ error: 'Required' });
 
-  db.get(
-    'SELECT id, name, color, password, unique_id FROM users WHERE name = ?',
-    [name],
-    (err, user) => {
-      if (err || !user) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-      if (!verifyPassword(password, user.password)) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      const token = crypto.randomBytes(32).toString('hex');
-      const expires = Date.now() + 30 * 24 * 60 * 60 * 1000;
-      activeSessions[token] = {
-        user: {
-          id: user.id,
-          name: user.name,
-          color: user.color,
-          uniqueId: user.unique_id
-        },
-        expires
-      };
-
-      res.json({
-        success: true,
-        token,
-        user: {
-          id: user.id,
-          name: user.name,
-          color: user.color,
-          uniqueId: user.unique_id
-        }
-      });
+  try {
+    const result = await pool.query('SELECT * FROM users WHERE name = $1', [name]);
+    const user = result.rows[0];
+    if (!user || !verifyPassword(password, user.password)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
-  );
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    activeSessions[token] = {
+      user: { id: user.id, name: user.name, color: user.color, uniqueId: user.unique_id },
+      expires
+    };
+
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, name: user.name, color: user.color, uniqueId: user.unique_id }
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'DB error' });
+  }
 });
 
-// ---- Update Profile ----
-app.post('/api/update-profile', (req, res) => {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing token' });
-  }
-  const token = auth.split(' ')[1];
+// Update Profile
+app.post('/api/update-profile', async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
   const session = activeSessions[token];
-  if (!session || session.expires < Date.now()) {
-    return res.status(401).json({ error: 'Invalid session' });
-  }
+  if (!session || session.expires < Date.now()) return res.status(401).json({ error: 'Invalid session' });
 
   const { name, color, password } = req.body;
-  if (!name || !color) {
-    return res.status(400).json({ error: 'Name and color required' });
-  }
+  if (!name || !color) return res.status(400).json({ error: 'Required' });
 
-  let updates = ['name = ?', 'color = ?'];
-  let values = [name, color];
-  if (password) {
-    updates.push('password = ?');
-    values.push(hashPassword(password));
-  }
-  values.push(session.user.id);
+  const updates = { name, color };
+  if (password) updates.password = hashPassword(password);
 
-  const sql = `UPDATE users SET ${updates.join(', ')} WHERE id = ?`;
-  db.run(sql, values, function (err) {
-    if (err) {
-      if (err.message.includes('UNIQUE')) {
-        return res.status(400).json({ error: 'Username taken' });
-      }
-      return res.status(500).json({ error: 'Database error' });
-    }
+  try {
+    await pool.query('UPDATE users SET name = $1, color = $2, password = $3 WHERE id = $4',
+      [name, color, password ? updates.password : null, session.user.id].filter(Boolean));
     session.user.name = name;
     session.user.color = color;
     res.json({ success: true });
-  });
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Username taken' });
+    res.status(500).json({ error: 'DB error' });
+  }
 });
 
-// ---------- Socket.IO ----------
-const onlineUsers = new Map(); // socket.id → user
-
+// --- Socket.IO ---
 io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
   const sess = activeSessions[token];
   if (sess && sess.expires > Date.now()) {
     socket.user = sess.user;
     next();
-  } else {
-    next(new Error('Unauthorized'));
-  }
+  } else next(new Error('Unauthorized'));
 });
 
 io.on('connection', (socket) => {
-  console.log(`${socket.user.name} (#${socket.user.uniqueId}) connected`);
-
-  // Online list
   onlineUsers.set(socket.id, socket.user);
   io.emit('online', Array.from(onlineUsers.values()));
-
-  // Join message
   socket.broadcast.emit('user joined', socket.user);
 
   // Load history
-  db.all(
-    `SELECT m.id, m.text, m.timestamp, u.name, u.color, u.unique_id AS uniqueId
-     FROM messages m
-     JOIN users u ON m.user_id = u.id
-     ORDER BY m.timestamp ASC
-     LIMIT 200`,
-    [],
-    (err, rows) => {
-      if (!err) {
-        rows.forEach(r =>
-          socket.emit('chat message', {
-            id: r.id,
-            user: { id: r.user_id, name: r.name, color: r.color, uniqueId: r.uniqueId },
-            text: r.text,
-            timestamp: r.timestamp
-          })
-        );
-      }
-    }
-  );
-
-  // === CHAT MESSAGE HANDLER ===
-  socket.on('chat message', (text) => {
-    const timestamp = Date.now();
-    db.run(
-      'INSERT INTO messages (user_id, text, timestamp) VALUES (?, ?, ?)',
-      [socket.user.id, text, timestamp],
-      function (err) {
-        if (err) return console.error('MSG INSERT error:', err);
-
-        const payload = {
-          id: this.lastID,
-          user: {
-            id: socket.user.id,
-            name: socket.user.name,
-            color: socket.user.color,
-            uniqueId: socket.user.uniqueId
-          },
-          text,
-          timestamp
-        };
-        io.emit('chat message', payload);
-      }
-    );
+  pool.query(`
+    SELECT m.id, m.text, m.timestamp, u.name, u.color, u.unique_id AS "uniqueId", u.id AS user_id
+    FROM messages m JOIN users u ON m.user_id = u.id
+    ORDER BY m.timestamp ASC LIMIT 200
+  `).then(({ rows }) => {
+    rows.forEach(r => socket.emit('chat message', {
+      id: r.id,
+      user: { id: r.user_id, name: r.name, color: r.color, uniqueId: r.uniqueId },
+      text: r.text,
+      timestamp: r.timestamp
+    }));
   });
 
-  // === Typing ===
+  // Chat message
+  socket.on('chat message', async (text) => {
+    const ts = Date.now();
+    const result = await pool.query(
+      'INSERT INTO messages (user_id, text, timestamp) VALUES ($1, $2, $3) RETURNING id',
+      [socket.user.id, text, ts]
+    );
+    const payload = {
+      id: result.rows[0].id,
+      user: { ...socket.user },
+      text,
+      timestamp: ts
+    };
+    io.emit('chat message', payload);
+  });
+
+  // Typing
   socket.on('typing', (isTyping) => {
     socket.broadcast.emit('typing', { userId: socket.user.id, isTyping });
   });
 
-  // === Edit Message ===
-  socket.on('edit message', ({ messageId, newText }) => {
-    db.get('SELECT user_id FROM messages WHERE id = ?', [messageId], (err, msg) => {
-      if (msg && msg.user_id === socket.user.id) {
-        db.run('UPDATE messages SET text = ? WHERE id = ?', [newText, messageId]);
-        io.emit('message edited', { messageId, newText });
-      }
-    });
+  // Edit/Delete
+  socket.on('edit message', async ({ messageId, newText }) => {
+    const res = await pool.query('SELECT user_id FROM messages WHERE id = $1', [messageId]);
+    if (res.rows[0]?.user_id === socket.user.id) {
+      await pool.query('UPDATE messages SET text = $1 WHERE id = $2', [newText, messageId]);
+      io.emit('message edited', { messageId, newText });
+    }
   });
 
-  // === Delete Message ===
-  socket.on('delete message', (messageId) => {
-    db.get('SELECT user_id FROM messages WHERE id = ?', [messageId], (err, msg) => {
-      if (msg && msg.user_id === socket.user.id) {
-        db.run('DELETE FROM messages WHERE id = ?', [messageId]);
-        io.emit('message deleted', messageId);
-      }
-    });
+  socket.on('delete message', async (messageId) => {
+    const res = await pool.query('SELECT user_id FROM messages WHERE id = $1', [messageId]);
+    if (res.rows[0]?.user_id === socket.user.id) {
+      await pool.query('DELETE FROM messages WHERE id = $1', [messageId]);
+      io.emit('message deleted', messageId);
+    }
   });
 
   socket.on('disconnect', () => {
@@ -275,8 +202,8 @@ io.on('connection', (socket) => {
   });
 });
 
-// ---------- Start ----------
+// --- Keep DB warm ---
+setInterval(() => pool.query('SELECT 1').catch(() => {}), 10 * 60 * 1000);
+
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Chat server running on http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
