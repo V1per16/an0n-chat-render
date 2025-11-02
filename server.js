@@ -140,6 +140,12 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   onlineUsers.set(socket.id, socket.user);
+  // === JOIN / LEAVE MESSAGES ===
+  socket.broadcast.emit('user joined', socket.user);
+  
+  socket.on('disconnect', () => {
+    socket.broadcast.emit('user left', socket.user);
+  });
   io.emit('online', Array.from(onlineUsers.values()));
   socket.broadcast.emit('user joined', socket.user);
 
